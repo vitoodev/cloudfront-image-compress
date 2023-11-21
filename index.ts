@@ -46,6 +46,10 @@ function uploadObject(
   return client.send(command);
 }
 
+function getCacheKey(uri: string): string {
+  return uri.startsWith("/") ? uri.substring(1) : uri;
+}
+
 function getOriginalKey(uri: string): string {
   return uri.split("/").slice(0, -1).join("/");
 }
@@ -74,8 +78,9 @@ exports.handler = async (
   try {
     const queryParams = event.Records[0].cf.request.querystring;
     const params = new URLSearchParams(queryParams);
+    const cacheKey = getCacheKey(request.uri);
+    const origKey = getOriginalKey(cacheKey);
 
-    const origKey = getOriginalKey(request.uri);
     if (origKey.trim().length === 0) throw new Error(`Invalid key ${origKey}`);
 
     const object = await getObject(origKey, Bucket);
@@ -99,7 +104,7 @@ exports.handler = async (
 
     // even if there is exception in saving the object we send back the generated
     // image back to viewer below
-    await uploadObject(request.uri, outputBuffer, Bucket).catch((e) =>
+    await uploadObject(cacheKey, outputBuffer, Bucket).catch((e) =>
       console.log("Exception while writing resized image to bucket", e)
     );
 
