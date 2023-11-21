@@ -3,3 +3,4 @@ builds
 *.js
 node_modules
 node_modlues_bck
+dist
