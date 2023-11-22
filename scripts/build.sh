@@ -32,3 +32,4 @@ rm -rf node_modules
 
 mv node_modules_bck node_modules
 
+echo "Done"

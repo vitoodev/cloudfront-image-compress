@@ -12,7 +12,7 @@ import sharp from "sharp";
 const client = new S3Client({
   logger: {
     error: console.error,
-    debug: console.log,
+    debug: () => {},
     warn: console.warn,
     info: console.log,
   },
@@ -34,24 +34,66 @@ async function getObject(
 function uploadObject(
   key: string,
   body: Required<PutObjectCommandInput["Body"]>,
-  bucket: string
+  bucket: string,
+  type?: string
 ): Promise<PutObjectCommandOutput> {
   const command = new PutObjectCommand({
     Bucket: bucket,
     Key: key,
     Body: body,
+    Metadata: {},
+    ContentType: type,
     CacheControl: `max-age=${MAX_AGE}`,
   });
 
   return client.send(command);
 }
 
-function getCacheKey(uri: string): string {
+function removeLeadingSlash(uri: string): string {
   return uri.startsWith("/") ? uri.substring(1) : uri;
 }
 
+function getCacheKey(uri: string): string {
+  return removeLeadingSlash(uri);
+}
+
 function getOriginalKey(uri: string): string {
-  return uri.split("/").slice(0, -1).join("/");
+  return removeLeadingSlash(uri).split("/").slice(0, -1).join("/");
+}
+
+interface Params {
+  width?: number;
+  height?: number;
+  quality?: number;
+  format?: string;
+}
+
+function findMatch(payload: string, pattern: RegExp): string | null {
+  const matchIndex = 1;
+  const result = payload.match(pattern);
+
+  if (result === null || typeof result[matchIndex] !== "string") return null;
+
+  return result[matchIndex];
+}
+
+function getParamsFromUri(uri: string): Params {
+  const params: Params = {};
+  const paramStr = uri.split("/").pop();
+
+  if (typeof paramStr === "undefined") return params;
+
+  const quality = findMatch(paramStr, /quality\((\d+)\)/);
+  const width = findMatch(paramStr, /w\((\d+)\)/);
+  const height = findMatch(paramStr, /h\((\d+)\)/);
+  const format = findMatch(paramStr, /format\(([a-z0-9]+)\)/i);
+
+  params.quality = quality === null ? 100 : parseInt(quality, 10);
+  params.width = width === null ? undefined : parseInt(width, 10);
+  params.height = height === null ? undefined : parseInt(height, 10);
+  params.format = format === null ? undefined : format;
+
+  return params;
 }
 
 exports.handler = async (
@@ -67,8 +109,8 @@ exports.handler = async (
   console.log("new");
   console.log(JSON.stringify({ event }));
 
-  response.headers["x-lae-region"] = [
-    { key: "x-lae-region", value: process.env.AWS_REGION },
+  response.headers!["x-lae-region"] = [
+    { key: "x-lae-region", value: process.env.AWS_REGION! },
   ];
 
   if (NOT_FOUND_STATUSES.includes(originResponse.status) === false) {
@@ -76,26 +118,28 @@ exports.handler = async (
   }
 
   try {
-    const queryParams = event.Records[0].cf.request.querystring;
-    const params = new URLSearchParams(queryParams);
-    const cacheKey = getCacheKey(request.uri);
-    const origKey = getOriginalKey(cacheKey);
+    const params = getParamsFromUri(request.uri);
+    const origKey = getOriginalKey(request.uri);
+    const cacheKey = "_cf/" + getCacheKey(request.uri);
 
     if (origKey.trim().length === 0) throw new Error(`Invalid key ${origKey}`);
 
     const object = await getObject(origKey, Bucket);
-    const imageBuffer = await object.Body.transformToByteArray();
+    const imageBuffer = await object.Body!.transformToByteArray();
 
     const metadata = await sharp(imageBuffer).metadata();
 
-    const width = params.has("w") ? parseInt(params.get("w"), 10) : undefined;
-    const height = params.has("h") ? parseInt(params.get("h"), 10) : undefined;
-    const quality = params.has("quality")
-      ? parseInt(params.get("quality"), 10)
-      : 100;
-    const format = params.has("format")
-      ? (params.get("format") as keyof sharp.FormatEnum)
-      : metadata.format;
+    const width = params.width;
+    const height = params.height;
+    const quality = params.quality;
+    const format =
+      typeof params.format === "undefined"
+        ? metadata.format!
+        : (params.format as keyof sharp.FormatEnum);
+    const contentType = `image/${format}`;
+
+    console.log({ width, height, quality, format });
+
     const processedImage = sharp(imageBuffer)
       .resize({ width, height })
       .toFormat(format, { quality });
@@ -104,18 +148,20 @@ exports.handler = async (
 
     // even if there is exception in saving the object we send back the generated
     // image back to viewer below
-    await uploadObject(cacheKey, outputBuffer, Bucket).catch((e) =>
+    await uploadObject(cacheKey, outputBuffer, Bucket, contentType).catch((e) =>
       console.log("Exception while writing resized image to bucket", e)
     );
 
     response.body = outputBuffer.toString("base64");
     response.bodyEncoding = "base64";
-    response.headers["content-type"] = [
-      { key: "Content-Type", value: `image/${format}` },
+    response.headers!["content-type"] = [
+      { key: "content-type", value: contentType },
     ];
-    response.headers["cache-control"] = [
-      { key: "max-age", value: MAX_AGE.toString() },
+    response.headers!["cache-control"] = [
+      { key: "cache-control", value: `max-age=${MAX_AGE.toString()}` },
     ];
+    response.status = "200";
+    response.statusDescription = "OK";
   } catch (error) {
     console.error("Error processing image:", error);
     return response;
