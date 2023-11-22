@@ -10,6 +10,7 @@ var knownExtensions = {
   png: "png",
   gif: "gif",
   avif: "avif",
+  webp: "webp",
 };
 
 function getExtension(extension) {
@@ -42,6 +43,8 @@ function handler(event) {
   });
 
   request.uri = request.uri + "/" + parts.join("");
+
+  console.log("URI:", request.uri);
 
   return request;
 }
