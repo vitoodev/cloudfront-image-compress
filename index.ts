@@ -61,6 +61,12 @@ function getOriginalKey(uri: string): string {
   return removeLeadingSlash(uri).split("/").slice(0, -1).join("/");
 }
 
+function getImageContentType(format: string): string {
+  if (format === "svg") format = "svg+xml";
+
+  return `image/${format}`;
+}
+
 interface Params {
   width?: number;
   height?: number;
@@ -136,9 +142,9 @@ exports.handler = async (
       typeof params.format === "undefined"
         ? metadata.format!
         : (params.format as keyof sharp.FormatEnum);
-    const contentType = `image/${format}`;
+    const contentType = getImageContentType(format);
 
-    console.log({ width, height, quality, format });
+    console.log({ width, height, quality, format, contentType });
 
     const processedImage = sharp(imageBuffer)
       .resize({ width, height })
@@ -148,9 +154,15 @@ exports.handler = async (
 
     // even if there is exception in saving the object we send back the generated
     // image back to viewer below
-    await uploadObject(cacheKey, outputBuffer, Bucket, contentType).catch((e) =>
-      console.log("Exception while writing resized image to bucket", e)
-    );
+    const uploadedObject = await uploadObject(
+      cacheKey,
+      outputBuffer,
+      Bucket,
+      contentType
+    ).catch((e) => {
+      console.log("Exception while writing resized image to bucket", e);
+      return null;
+    });
 
     response.body = outputBuffer.toString("base64");
     response.bodyEncoding = "base64";
@@ -160,6 +172,16 @@ exports.handler = async (
     response.headers!["cache-control"] = [
       { key: "cache-control", value: `max-age=${MAX_AGE.toString()}` },
     ];
+
+    if (uploadedObject !== null) {
+      response.headers!["etag"] = [
+        { key: "Etag", value: uploadedObject.ETag! },
+      ];
+      response.headers!["last-modified"] = [
+        { key: "Last-Modified", value: new Date().toUTCString() },
+      ];
+    }
+
     response.status = "200";
     response.statusDescription = "OK";
   } catch (error) {
